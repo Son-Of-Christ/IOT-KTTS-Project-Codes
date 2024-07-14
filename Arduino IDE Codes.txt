@@ -1,0 +1,282 @@
+#include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
+#include <WiFiClient.h>
+#include <SPI.h>
+#include <MFRC522.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+#define SS_PIN D2  // SDA / SS is connected to pinout D2
+#define RST_PIN D1  // RST is connected to pinout D1
+#define BUZZER_PIN D8 // Buzzer connected to pinout D8
+
+MFRC522 mfrc522(SS_PIN, RST_PIN);  // Create MFRC522 instance.
+
+#define ON_Board_LED 2  // Defining an On Board LED, used for indicators when connecting to a wifi router
+
+// SSID and Password of your WiFi router
+const char* ssid = "pixel3";
+const char* password = "1234567890";
+IPAddress serverIP(192, 168, 1, 35);
+String path = "/NodeMCU_RC522_Mysql/getUID.php"; // Path to your PHP script
+String path2 = "/NodeMCU_RC522_Mysql/NyabugogogetUID.php"; // Path to your PHP script
+HTTPClient http; // Declare object of class HTTPClient
+WiFiClient client;
+
+String StrUID; // Variable to store the UID to be deleted
+
+bool timerRunning = false;
+unsigned long startTime = 0;
+bool cardPresent = false; // Declaration of cardPresent variable
+String totalUIDs = ""; // Variable to store the total number of UIDs
+LiquidCrystal_I2C lcd(0x27, 16, 2); // Initialize LCD screen with I2C address 0x27, 16 columns, and 2 rows
+
+bool freshInsert = true; // Flag to indicate fresh insertion
+
+void getTotalUIDs(); // Function declaration
+void getTotalUIDsNyabugogo();//nyabugogo fetch function
+void highVolumeTone(int pin, int frequency, int duration);
+
+void setup() {
+  Serial.begin(115200); // Initialize serial communications with the PC
+  SPI.begin(); // Init SPI bus     
+  mfrc522.PCD_Init(); // Init MFRC522 card
+
+  pinMode(BUZZER_PIN, OUTPUT); // Set buzzer pin as output
+
+  delay(500);
+
+  Wire.begin(D4, D3); // Initialize I2C with specified SDA and SCL pins
+  lcd.init(); // Initialize the LCD screen
+  lcd.backlight(); // Turn on the backlight
+  lcd.setCursor(0, 0); // Set cursor to the first row
+  lcd.print("Waiting for data"); // Display the message
+
+  WiFi.begin(ssid, password); // Connect to your WiFi router
+  Serial.println("");
+
+  pinMode(ON_Board_LED, OUTPUT);
+  digitalWrite(ON_Board_LED, HIGH); // Turn off LED on board
+
+  // Wait for connection
+  Serial.print("Connecting");
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    digitalWrite(ON_Board_LED, LOW);
+    delay(250);
+    digitalWrite(ON_Board_LED, HIGH);
+    delay(250);
+  }
+  digitalWrite(ON_Board_LED, HIGH); // Turn off the LED when connected to the WiFi router
+  Serial.println("");
+  Serial.print("Successfully connected to : ");
+  Serial.println(ssid);
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+
+  Serial.println("Please tap a card or keychain to see the UID!");
+  Serial.println("");
+}
+
+void loop() {
+getTotalUIDsNyabugogo();
+  // Wait until a card is detected
+  while (!mfrc522.PICC_IsNewCardPresent()) {
+    delay(100);
+  }
+
+  // Once a card is detected, read its UID
+  if (mfrc522.PICC_ReadCardSerial()) {
+    digitalWrite(ON_Board_LED, LOW);
+
+    // Clear the UID string before reading a new one
+    StrUID = "";
+
+    for (byte i = 0; i < mfrc522.uid.size; i++) {
+      StrUID += String(mfrc522.uid.uidByte[i] < 0x10 ? "0" : "");
+      StrUID += String(mfrc522.uid.uidByte[i], HEX);
+    }
+    StrUID.toUpperCase(); // Convert UID to uppercase
+
+    String UIDresultSend, postData;
+    UIDresultSend = StrUID;
+    getTotalUIDs();
+    // Post Data for checking if UID exists
+    postData = "UIDresult=" + UIDresultSend;
+    if (http.begin(client, "http://" + serverIP.toString() + path)) {  // Specify request destination with full URL
+      http.addHeader("Content-Type", "application/x-www-form-urlencoded"); // Specify content-type header
+
+      int httpCode = http.POST(postData);   // Send the request
+
+      Serial.println("THE UID OF THE SCANNED CARD IS : " + StrUID);
+      Serial.println("HTTP Response Code: " + String(httpCode)); // Print HTTP return code
+
+      if (httpCode > 0) {
+        if (httpCode == 200) {
+          String payload = http.getString();    // Get the response payload
+          Serial.println("Response Payload: " + payload); // Print request response payload
+
+          if (freshInsert && payload != "UID already exists" && !timerRunning) {
+                    successInsertTone(BUZZER_PIN); // Play a success tone if it's a fresh insertion or UID deleted and timer is not running
+                }
+          
+          getTotalUIDs();
+          if (payload == "UID already exists" && !timerRunning) {
+            // Start the timer to initiate delete operation
+            startTime = millis();
+            timerRunning = true;
+            Serial.println("Timer started. Current time: " + String(startTime));
+            Serial.println("TimerRunning flag: " + String(timerRunning)); // Debug statement
+          } else if (payload == "UID deleted") {
+            // If the UID was successfully deleted, update the LCD screen
+            getTotalUIDs();
+             successDeleteTone(BUZZER_PIN);// Play a success tone
+          }
+        } else {
+          failureTone(BUZZER_PIN);// Play a failure tone
+        }
+      }
+      else {
+        failureTone(BUZZER_PIN); // Play a failure tone
+        Serial.println("Error: HTTP request failed with code " + String(httpCode));
+      }
+
+      http.end();  // Close connection
+    }
+    else {
+      failureTone(BUZZER_PIN);// Play a failure tone
+      Serial.println("Error: HTTP request failed");
+    }
+
+    delay(1000);
+    digitalWrite(ON_Board_LED, HIGH);
+
+    // Wait for the card to be removed
+    while (mfrc522.PICC_IsNewCardPresent()) {
+      delay(100);
+    }
+  }
+
+  // Check if the card has been present for 3 seconds and delete the UID
+  if (timerRunning) {
+    unsigned long currentTime = millis();
+    unsigned long elapsedTime = currentTime - startTime;
+
+    Serial.println("Current time: " + String(currentTime));
+    Serial.println("Start time: " + String(startTime));
+    Serial.println("Elapsed time: " + String(elapsedTime));
+
+    if (elapsedTime >= 3000) {
+      Serial.println("Timer expired. Deleting UID: " + StrUID);
+      deleteUID(StrUID); // Perform delete operation
+      getTotalUIDs(); 
+      timerRunning = false; // Reset the timer flag
+      cardPresent = false; // Reset the card present flag
+
+      successDeleteTone(BUZZER_PIN); // Play a success tone
+      getTotalUIDs(); 
+      delay(4000); // Add a delay of 4 seconds after deleting the UID
+    }
+  }
+}
+
+void getTotalUIDs() {
+  if (http.begin(client, "http://" + serverIP.toString() + path)) {
+    http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+    int httpCode = http.GET();
+    Serial.println("HTTP Response Code: " + String(httpCode));
+
+    if (httpCode > 0) {
+      if (httpCode == 200) {
+        String payload = http.getString();
+        Serial.println("Response Payload: " + payload);
+
+        totalUIDs = payload;
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Downtown: ");
+        lcd.print(totalUIDs);
+        getTotalUIDsNyabugogo();
+      }
+    }
+    else {
+      Serial.println("Error: HTTP request failed with code " + String(httpCode));
+    }
+
+    http.end();
+  }
+  else {
+    Serial.println("Error: HTTP request failed");
+  }
+}
+
+void deleteUID(String uidToDelete) {
+  // Construct the full URL with the deleteUID parameter
+  String deleteURL = "http://" + serverIP.toString() + path + "?deleteUID=" + uidToDelete;
+
+  if (http.begin(client, deleteURL)) {
+    int httpCode = http.GET();
+
+    if (httpCode > 0) {
+      String payload = http.getString();
+      Serial.println("Delete Response: " + payload);
+      getTotalUIDs(); // Update totalUIDs after deletio
+    }
+    else {
+      Serial.println("Error: HTTP delete request failed");
+    }
+
+    http.end();
+  }
+  else {
+    Serial.println("Error: Unable to connect to server");
+  }
+}
+
+void getTotalUIDsNyabugogo() {
+  if (http.begin(client, "http://" + serverIP.toString() + path2)) {
+    http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+    int httpCode = http.GET();
+    Serial.println("HTTP Response Code: " + String(httpCode));
+
+    if (httpCode > 0) {
+      if (httpCode == 200) {
+        String payload = http.getString();
+        Serial.println("Response Payload: " + payload);
+
+        totalUIDs = payload;
+        lcd.setCursor(0, 1);
+        lcd.print("Nyabugogo: ");
+        lcd.print(totalUIDs);
+      }
+    }
+    else {
+      Serial.println("Error: HTTP request failed with code " + String(httpCode));
+    }
+
+    http.end();
+  }
+  else {
+    Serial.println("Error: HTTP request failed");
+  }
+}
+
+// Custom tone function to increase volume
+void highVolumeTone(int pin, int frequency, int duration) {
+  int volume = 255; // Adjust this value to increase volume (0-255)
+  analogWrite(pin, volume); // Set buzzer volume
+  tone(pin, frequency, duration); // Play tone
+  delay(duration); // Delay for the duration of the tone
+  noTone(pin); // Turn off the tone
+}
+
+void successInsertTone(int pin) {
+  highVolumeTone(pin, 4000, 1000); // Play a "BOOOOOO" sound for success
+}
+void successDeleteTone(int pin) {
+  highVolumeTone(pin, 300, 2000); // Play a "BOOOOOO" sound for success
+}
+void failureTone(int pin) {
+  highVolumeTone(pin, 1500, 200); // Play a "duuuuu" sound for failure
+}
+

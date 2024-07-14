@@ -1,0 +1,117 @@
+<?php
+// Enable error reporting
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+
+// Database connection details
+$servername = "localhost"; // Replace with your MySQL server IP or hostname
+$username = "root"; // Replace with your MySQL username
+$password = "thierry@123"; // Replace with your MySQL password
+$dbname = "ktts_db"; // Replace with your database name
+
+// Check if the POST request contains data
+if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['UIDresult'])) {
+    // If UIDresult parameter exists, handle the insertion operation
+    // This part of the script handles insertion of UID into the database
+    $uid = $_POST['UIDresult']; // Get the UID to be inserted
+    
+    // Convert UID value to uppercase to ensure consistency
+    $uid = strtoupper($uid);
+    
+    // Connect to the database
+    $conn = new mysqli($servername, $username, $password, $dbname);
+
+    // Check connection
+    if ($conn->connect_error) {
+        die("Connection failed: " . $conn->connect_error);
+    }
+
+    // Check if the UID already exists in the database
+    $check_sql = "SELECT uid FROM rfid_data WHERE uid = '$uid'";
+    $check_result = $conn->query($check_sql);
+
+    if ($check_result->num_rows == 0) {
+        // If UID doesn't exist, insert it into the database
+        $insert_sql = "INSERT INTO rfid_data (uid) VALUES ('$uid')";
+
+        if ($conn->query($insert_sql) === TRUE) {
+            // Insertion successful, perform the same operation as GET request to return total UIDs
+            performGetRequest();
+        } else {
+            echo "Error inserting UID: " . $conn->error;
+        }
+    } else {
+        // UID already exists in the database
+        echo "UID already exists";
+    }
+
+    // Close connection
+    $conn->close();
+} elseif ($_SERVER["REQUEST_METHOD"] == "GET" && isset($_GET['deleteUID'])) {
+    // Handle GET request for deletion
+    $uidToDelete = $_GET['deleteUID']; // Get the UID to be deleted
+    
+    // Convert UID value to uppercase to ensure consistency
+    $uidToDelete = strtoupper($uidToDelete);
+    
+    // Connect to the database
+    $conn = new mysqli($servername, $username, $password, $dbname);
+
+    // Check connection
+    if ($conn->connect_error) {
+        die("Connection failed: " . $conn->connect_error);
+    }
+
+    // Prepare a DELETE statement to prevent SQL injection
+    $delete_sql = $conn->prepare("DELETE FROM rfid_data WHERE uid = ?");
+    $delete_sql->bind_param("s", $uidToDelete);
+    
+    // Execute the DELETE statement
+    if ($delete_sql->execute()) {
+        // Check if any row was affected
+        if ($delete_sql->affected_rows > 0) {
+            // Deletion successful, perform the same operation as GET request to return total UIDs
+            performGetRequest();
+        } else {
+            echo "UID not found or already deleted";
+        }
+    } else {
+        echo "Error deleting UID: " . $delete_sql->error;
+    }
+
+    // Close statement and connection
+    $delete_sql->close();
+    $conn->close();
+} else {
+    // If neither POST nor GET request with deleteUID parameter is received, return the total number of UIDs
+    performGetRequest();
+}
+
+function performGetRequest() {
+    global $servername, $username, $password, $dbname;
+
+    // Connect to the database
+    $conn = new mysqli($servername, $username, $password, $dbname);
+
+    // Check connection
+    if ($conn->connect_error) {
+        die("Connection failed: " . $conn->connect_error);
+    }
+
+    // Select data from the database
+    $sql_select = "SELECT COUNT(uid) AS total_uid FROM rfid_data"; // Count the number of rows in the table
+    $result = $conn->query($sql_select);
+
+    if ($result->num_rows > 0) {
+        // Output data of each row
+        while ($row = $result->fetch_assoc()) {
+            echo $row["total_uid"]; // Echo only the total number of UIDs from the database
+        }
+    } else {
+        echo "0"; // Echo 0 if no results found
+    }
+
+    // Close connection
+    $conn->close();
+}
+?>
